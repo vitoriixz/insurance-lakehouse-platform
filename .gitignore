@@ -1,0 +1,8 @@
+# Arquivos do macOS
+.DS_Store
+
+# Arquivos do Python
+__pycache__/
+*.pyc
+.env
+venv/
