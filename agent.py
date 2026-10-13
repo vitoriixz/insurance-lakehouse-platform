@@ -116,3 +116,5 @@ try:
 except Exception as e:
     print(f"\n[ERRO DE INFRAESTRUTURA] Falha crítica na extração dos dados.")
     print(f"Detalhe técnico: {e}")
+
+# TESTE DEPLOY ACTIONS
