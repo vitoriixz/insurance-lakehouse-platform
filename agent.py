@@ -3,30 +3,35 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from google.genai import errors
+from databricks import sql
 
 # 1. Carrega as credenciais
-load_dotenv()
+load_dotenv(override=True)
 api_key = os.getenv("GEMINI_API_KEY")
+db_host = os.getenv("DATABRICKS_SERVER_HOSTNAME")
+db_path = os.getenv("DATABRICKS_HTTP_PATH")
+db_token = os.getenv("DATABRICKS_TOKEN")
+
+print(f"[SecOps Debug]: Usando o token -> {db_token[:8]}...")
 
 if not api_key:
-    raise ValueError("Chave GEMINI_API_KEY não encontrada no arquivo .env.")
+    raise ValueError("Chave GEMINI_API_KEY não encontrada no ambiente.")
+if not all([db_host, db_path, db_token]):
+    raise ValueError("Credenciais do Databricks ausentes no ambiente.")
 
+# Cliente inicializado no modo nativo padrão
 client = genai.Client(api_key=api_key)
 
-# 2. O Contexto do Agente: Mapeamento da Tabela Silver
+# 2. Schema da Tabela Silver
 schema_silver = """
 Tabela: silver_claims
-Engine: Databricks Spark SQL (Delta Lake)
 Colunas:
-- claim_id (STRING): Identificador único do sinistro
-- policy_id (STRING): Identificador da apólice
-- incident_date (DATE): Data do acidente
-- incident_type (STRING): Tipo de sinistro (Ex: 'Colisão', 'Roubo', 'Climático')
-- claim_amount (DOUBLE): Valor acionado em dólares
-- status (STRING): Status atual ('Aprovado', 'Pendente', 'Negado')
+- claim_id (INT): Identificador único do sinistro
+- amount (DOUBLE): Valor financeiro do sinistro
+- weather_condition (STRING): Condição climática no momento do incidente
 """
 
-# 3. System Instruction: A regra de negócio rígida do Agente
+# 3. System Instruction
 instrucao_sistema = f"""
 Você é um Arquiteto de Dados especialista em Databricks e Spark SQL.
 Sua única função é receber uma pergunta de negócio e retornar EXATAMENTE o código SQL necessário para respondê-la.
@@ -36,73 +41,78 @@ Use estritamente o seguinte schema para basear suas queries:
 {schema_silver}
 """
 
-print("Iniciando o Agente Data Lakehouse (PoC Arquitetural)...\n")
+print("Iniciando o Agente Data Lakehouse (Conexão Live AWS Databricks)...\n")
 
 try:
     # =====================================================================
     # FASE 1: O CÉREBRO (Text-to-SQL)
     # =====================================================================
-    chat_sql = client.chats.create(
-        model='gemini-3.8-flash',
+    
+    # AQUI ESTÁ A MÁGICA: Captura a pergunta enviada pelo Front-end/Lambda.
+    # O segundo parâmetro é um fallback caso você rode o script direto no Mac.
+    pergunta_usuario = os.getenv("USER_PROMPT", "Qual é o valor total financeiro (amount) de todos os sinistros registrados na base?")
+    
+    print(f"[Diretoria]: '{pergunta_usuario}'")
+
+    response_sql = client.models.generate_content(
+        model='gemini-3.5-flash',
+        contents=pergunta_usuario,
         config=types.GenerateContentConfig(
             system_instruction=instrucao_sistema,
-            temperature=0.1 
+            temperature=0.1
         )
     )
 
-    pergunta_usuario = "Qual é o valor total financeiro de todos os sinistros que já foram aprovados e que são do tipo Colisão?"
-    print(f"[Diretoria]: '{pergunta_usuario}'")
-    
-    response_sql = chat_sql.send_message(pergunta_usuario)
     query_gerada = response_sql.text.strip()
     print(f"\n[Agente - Motor SQL]:\n{query_gerada}")
 
     # =====================================================================
-    # FASE 2: O MÚSCULO (Motor Databricks)
+    # FASE 2: O MÚSCULO (Execução Live no Databricks)
     # =====================================================================
-    print("\n[Sistema]: Roteando query via JDBC para o cluster Databricks...")
-    
-    # NOTA ARQUITETURAL: Em produção (AWS/Databricks Enterprise), usaríamos 
-    # a biblioteca databricks-sql-connector e o comando cursor.execute(query_gerada).
-    # Como o Databricks Community Edition (Free Tier) oculta o HTTP Path e Server Hostname,
-    # realizamos um mock do retorno do banco para validar a orquestração do Agente.
-    resultado_banco = 158500.00 
-    
-    print(f"[Databricks - Camada Silver]: Resultado bruto retornado -> {resultado_banco}")
+    print("\n[Sistema]: Estabelecendo túnel JDBC com o Databricks SQL Warehouse...")
+
+    with sql.connect(
+        server_hostname=db_host,
+        http_path=db_path,
+        access_token=db_token
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query_gerada)
+            result = cursor.fetchone()
+            resultado_banco = result[0] if result and result[0] is not None else 0.0
+
+    print(f"[Databricks - Camada Silver]: Resultado real extraído -> {resultado_banco}")
 
     # =====================================================================
     # FASE 3: A SÍNTESE (Resposta Executiva)
     # =====================================================================
-    chat_resposta = client.chats.create(
-        model='gemini-3.8-flash',
-        config=types.GenerateContentConfig(temperature=0.4) # Temperatura levemente maior para linguagem natural
-    )
+    print("\n[Agente - Resposta Executiva]:")
     
     prompt_sintese = f"""
     A pergunta de negócio do diretor foi: {pergunta_usuario}
     A nossa query SQL no Databricks retornou exatamente este valor bruto: {resultado_banco}
-    
+
     Aja como um Arquiteto de Soluções respondendo de forma educada, direta e profissional ao diretor.
     Formate o valor monetário em dólares. Não explique a query SQL, foque no insight de negócio.
     """
-    
-    response_final = chat_resposta.send_message(prompt_sintese)
-    print(f"\n[Agente - Resposta Executiva]:\n{response_final.text}\n")
 
-# =====================================================================
-# TRATAMENTO DE ERROS (Enterprise Grade)
-# =====================================================================
-# Captura APENAS erros dos servidores da API (Ex: 503 Overloaded, 500 Internal Error)
-except errors.ServerError as e:
-    print(f"\n[ERRO DE INFRAESTRUTURA GOOGLE] O servidor falhou ou está sobrecarregado.")
-    print(f"Código HTTP: {e.code} | Detalhe: {e.message}")
+    try:
+        response_final = client.models.generate_content(
+            model='gemini-3.5-flash',
+            contents=prompt_sintese,
+            config=types.GenerateContentConfig(temperature=0.4)
+        )
+        print(response_final.text)
+        
+    except Exception as e_sintese:
+        # Fallback (Degradação Graciosa): Se a IA falhar na formatação, entregamos o dado bruto.
+        print("Prezado Diretor,")
+        print(f"A nossa análise direta na base de dados retornou o valor de **US$ {resultado_banco}**.")
+        print(f"\n*(Nota do Sistema: A formatação executiva via IA está temporariamente indisponível devido a alta demanda nos servidores, mas o dado bruto acima é preciso e foi extraído do Databricks com sucesso em tempo real).*")
+        print("\nAtenciosamente,")
+        print("**Equipe de Arquitetura de Soluções**")
 
-# Captura APENAS erros causados pelo nosso lado/código (Ex: 401 Sem permissão, 404 Modelo não existe)
-except errors.ClientError as e:
-    print(f"\n[ERRO NO CLIENTE] Nossa requisição foi negada pela API.")
-    print(f"Código HTTP: {e.code} | Detalhe: {e.message}")
-
-# O Catch-All agora só captura o que sobrar (Ex: falta de rede local no Mac, erro de memória)
+# Captura apenas se as Fases 1 (Geração de SQL) ou 2 (Databricks) falharem
 except Exception as e:
-    print(f"\n[ERRO DESCONHECIDO NO SISTEMA LOCAL] Falha na execução do Python.")
+    print(f"\n[ERRO DE INFRAESTRUTURA] Falha crítica na extração dos dados.")
     print(f"Detalhe técnico: {e}")
