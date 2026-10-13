@@ -1,13 +1,11 @@
 import os
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-from google.genai import errors
+from groq import Groq
 from databricks import sql
 
 # 1. Carrega as credenciais
 load_dotenv(override=True)
-api_key = os.getenv("GEMINI_API_KEY")
+api_key = os.getenv("GROQ_API_KEY")
 db_host = os.getenv("DATABRICKS_SERVER_HOSTNAME")
 db_path = os.getenv("DATABRICKS_HTTP_PATH")
 db_token = os.getenv("DATABRICKS_TOKEN")
@@ -15,12 +13,12 @@ db_token = os.getenv("DATABRICKS_TOKEN")
 print(f"[SecOps Debug]: Usando o token -> {db_token[:8]}...")
 
 if not api_key:
-    raise ValueError("Chave GEMINI_API_KEY não encontrada no ambiente.")
+    raise ValueError("Chave GROQ_API_KEY não encontrada no ambiente.")
 if not all([db_host, db_path, db_token]):
     raise ValueError("Credenciais do Databricks ausentes no ambiente.")
 
-# Cliente inicializado no modo nativo padrão
-client = genai.Client(api_key=api_key)
+# Cliente inicializado com a Groq
+client = Groq(api_key=api_key)
 
 # 2. Schema da Tabela Silver
 schema_silver = """
@@ -45,25 +43,27 @@ print("Iniciando o Agente Data Lakehouse (Conexão Live AWS Databricks)...\n")
 
 try:
     # =====================================================================
-    # FASE 1: O CÉREBRO (Text-to-SQL)
+    # FASE 1: O CÉREBRO (Text-to-SQL via Groq/Llama 3)
     # =====================================================================
     
-    # AQUI ESTÁ A MÁGICA: Captura a pergunta enviada pelo Front-end/Lambda.
-    # O segundo parâmetro é um fallback caso você rode o script direto no Mac.
     pergunta_usuario = os.getenv("USER_PROMPT", "Qual é o valor total financeiro (amount) de todos os sinistros registrados na base?")
     
     print(f"[Diretoria]: '{pergunta_usuario}'")
 
-    response_sql = client.models.generate_content(
-        model='gemini-3.5-flash',
-        contents=pergunta_usuario,
-        config=types.GenerateContentConfig(
-            system_instruction=instrucao_sistema,
-            temperature=0.1
-        )
+    response_sql = client.chat.completions.create(
+        model="llama-3.1-70b-versatile",
+        messages=[
+            {"role": "system", "content": instrucao_sistema},
+            {"role": "user", "content": pergunta_usuario}
+        ],
+        temperature=0.1
     )
 
-    query_gerada = response_sql.text.strip()
+    query_gerada = response_sql.choices[0].message.content.strip()
+    
+    # Prevenção extra de segurança caso o modelo retorne crases teimosas
+    query_gerada = query_gerada.replace("```sql", "").replace("```", "").strip()
+    
     print(f"\n[Agente - Motor SQL]:\n{query_gerada}")
 
     # =====================================================================
@@ -97,22 +97,24 @@ try:
     """
 
     try:
-        response_final = client.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=prompt_sintese,
-            config=types.GenerateContentConfig(temperature=0.4)
+        response_final = client.chat.completions.create(
+            model="llama-3.1-70b-versatile",
+            messages=[
+                {"role": "system", "content": "Você é um Arquiteto de Soluções C-Level."},
+                {"role": "user", "content": prompt_sintese}
+            ],
+            temperature=0.4
         )
-        print(response_final.text)
+        print(response_final.choices[0].message.content)
         
     except Exception as e_sintese:
-        # Fallback (Degradação Graciosa): Se a IA falhar na formatação, entregamos o dado bruto.
+        # Fallback (Degradação Graciosa)
         print("Prezado Diretor,")
         print(f"A nossa análise direta na base de dados retornou o valor de **US$ {resultado_banco}**.")
-        print(f"\n*(Nota do Sistema: A formatação executiva via IA está temporariamente indisponível devido a alta demanda nos servidores, mas o dado bruto acima é preciso e foi extraído do Databricks com sucesso em tempo real).*")
+        print(f"\n*(Nota do Sistema: A formatação executiva via IA está temporariamente indisponível devido a instabilidade, mas o dado bruto acima é preciso e foi extraído do Databricks com sucesso em tempo real).*")
         print("\nAtenciosamente,")
         print("**Equipe de Arquitetura de Soluções**")
 
-# Captura apenas se as Fases 1 (Geração de SQL) ou 2 (Databricks) falharem
 except Exception as e:
     print(f"\n[ERRO DE INFRAESTRUTURA] Falha crítica na extração dos dados.")
     print(f"Detalhe técnico: {e}")
