@@ -1,4 +1,5 @@
 import os
+import re
 from dotenv import load_dotenv
 from groq import Groq
 from databricks import sql
@@ -20,20 +21,47 @@ if not all([db_host, db_path, db_token]):
 # Cliente inicializado com a Groq
 client = Groq(api_key=api_key)
 
+def selecionar_modelo_ativo(groq_client):
+    """
+    Seleciona o modelo ativo com base no catálogo real retornado pela API da Groq.
+    """
+    preferencia = [
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-20b"
+    ]
+    try:
+        modelos_online = [m.id for m in groq_client.models.list().data]
+        for mod in preferencia:
+            if mod in modelos_online:
+                print(f"[SecOps Debug]: Modelo validado e ativo na Groq -> {mod}")
+                return mod
+        
+        bloqueados = ["guard", "safeguard", "whisper", "orpheus", "tts", "vision"]
+        for mod in modelos_online:
+            if not any(b in mod.lower() for b in bloqueados):
+                print(f"[SecOps Debug]: Usando modelo alternativo detectado -> {mod}")
+                return mod
+    except Exception as e:
+        print(f"[Aviso]: Não foi possível listar catálogo ({e}). Usando fallback padrão.")
+    
+    return "openai/gpt-oss-120b"
+
 # 2. Schema da Tabela Silver
 schema_silver = """
 Tabela: silver_claims
 Colunas:
 - claim_id (INT): Identificador único do sinistro
 - amount (DOUBLE): Valor financeiro do sinistro
-- weather_condition (STRING): Condição climática no momento do incidente
+- weather_condition (STRING): Condição climática no momento do incidente (Exemplos comuns: 'Rain', 'Clear', 'Snow', 'Fog', 'Storm')
 """
 
 # 3. System Instruction
 instrucao_sistema = f"""
 Você é um Arquiteto de Dados especialista em Databricks e Spark SQL.
 Sua única função é receber uma pergunta de negócio e retornar EXATAMENTE o código SQL necessário para respondê-la.
-REGRA CRÍTICA: Retorne APENAS a query SQL pura. Não adicione explicações, saudações, ou blocos de formatação markdown (como ```sql).
+REGRA CRÍTICA 1: Retorne APENAS a query SQL pura. Não adicione explicações, saudações, raciocínio ou blocos de formatação markdown (como ```sql).
+REGRA CRÍTICA 2: Ao filtrar colunas de texto (STRING), use sempre ILIKE (case-insensitive) em vez de '=' para evitar falhas de maiúsculas/minúsculas. Não use COALESCE para forçar zero em agregações vazias, deixe o banco retornar NULL caso o filtro não encontre linhas.
 
 Use estritamente o seguinte schema para basear suas queries:
 {schema_silver}
@@ -42,16 +70,17 @@ Use estritamente o seguinte schema para basear suas queries:
 print("Iniciando o Agente Data Lakehouse (Conexão Live AWS Databricks)...\n")
 
 try:
+    modelo_ativo = selecionar_modelo_ativo(client)
+
     # =====================================================================
-    # FASE 1: O CÉREBRO (Text-to-SQL via Groq/Llama 3)
+    # FASE 1: O CÉREBRO (Text-to-SQL via Groq)
     # =====================================================================
-    
     pergunta_usuario = os.getenv("USER_PROMPT", "Qual é o valor total financeiro (amount) de todos os sinistros registrados na base?")
     
     print(f"[Diretoria]: '{pergunta_usuario}'")
 
     response_sql = client.chat.completions.create(
-        model="llama3-70b-8192", # <--- Nova string do modelo
+        model=modelo_ativo,
         messages=[
             {"role": "system", "content": instrucao_sistema},
             {"role": "user", "content": pergunta_usuario}
@@ -60,14 +89,13 @@ try:
     )
 
     query_gerada = response_sql.choices[0].message.content.strip()
-    
-    # Prevenção extra de segurança caso o modelo retorne crases teimosas
+    query_gerada = re.sub(r"<think>.*?</think>", "", query_gerada, flags=re.DOTALL).strip()
     query_gerada = query_gerada.replace("```sql", "").replace("```", "").strip()
     
     print(f"\n[Agente - Motor SQL]:\n{query_gerada}")
 
     # =====================================================================
-    # FASE 2: O MÚSCULO (Execução Live no Databricks)
+    # FASE 2: O MÚSCULO (Execução Live e Validação de Retorno no Databricks)
     # =====================================================================
     print("\n[Sistema]: Estabelecendo túnel JDBC com o Databricks SQL Warehouse...")
 
@@ -78,45 +106,61 @@ try:
     ) as connection:
         with connection.cursor() as cursor:
             cursor.execute(query_gerada)
-            result = cursor.fetchone()
-            resultado_banco = result[0] if result and result[0] is not None else 0.0
+            rows = cursor.fetchall()
 
-    print(f"[Databricks - Camada Silver]: Resultado real extraído -> {resultado_banco}")
+    # Validação estrita: verifica se a tabela retornou linhas e se o valor não é NULL (None)
+    sem_dados = (
+        not rows 
+        or len(rows) == 0 
+        or all(val is None for val in rows[0])
+    )
 
-    # =====================================================================
-    # FASE 3: A SÍNTESE (Resposta Executiva)
-    # =====================================================================
-    print("\n[Agente - Resposta Executiva]:")
-    
-    prompt_sintese = f"""
-    A pergunta de negócio do diretor foi: {pergunta_usuario}
-    A nossa query SQL no Databricks retornou exatamente este valor bruto: {resultado_banco}
-
-    Aja como um Arquiteto de Soluções respondendo de forma educada, direta e profissional ao diretor.
-    Formate o valor monetário em dólares. Não explique a query SQL, foque no insight de negócio.
-    """
-
-    try:
-        response_final = client.chat.completions.create(
-            model="llama3-8b-8192", # <--- Nova string do modelo
-            messages=[
-                {"role": "system", "content": "Você é um Arquiteto de Soluções C-Level."},
-                {"role": "user", "content": prompt_sintese}
-            ],
-            temperature=0.4
+    if sem_dados:
+        print("[Databricks - Camada Silver]: ALERTA -> A query executou com sucesso, mas retornou NULL / 0 registros compatíveis.")
+        print("\n[Agente - Resposta Executiva]:")
+        print(
+            "Prezado Diretor,\n\n"
+            "A consulta foi executada na camada Silver do Databricks, porém **nenhum registro foi encontrado** "
+            "para os critérios informados na sua pergunta (o banco de dados retornou vazio/nulo).\n\n"
+            "Recomendo verificar se o termo buscado consta na base de dados ou solicitar uma listagem das categorias disponíveis."
         )
-        print(response_final.choices[0].message.content)
+    else:
+        # Extrai o resultado real (suporta valor único ou múltiplas linhas/colunas)
+        resultado_banco = rows[0][0] if len(rows) == 1 and len(rows[0]) == 1 else rows
+        print(f"[Databricks - Camada Silver]: Resultado real extraído -> {resultado_banco}")
+
+        # =====================================================================
+        # FASE 3: A SÍNTESE (Resposta Executiva apenas com dados validados)
+        # =====================================================================
+        print("\n[Agente - Resposta Executiva]:")
         
-    except Exception as e_sintese:
-        # Fallback (Degradação Graciosa)
-        print("Prezado Diretor,")
-        print(f"A nossa análise direta na base de dados retornou o valor de **US$ {resultado_banco}**.")
-        print(f"\n*(Nota do Sistema: A formatação executiva via IA está temporariamente indisponível devido a instabilidade, mas o dado bruto acima é preciso e foi extraído do Databricks com sucesso em tempo real).*")
-        print("\nAtenciosamente,")
-        print("**Equipe de Arquitetura de Soluções**")
+        prompt_sintese = f"""
+        A pergunta de negócio do diretor foi: {pergunta_usuario}
+        A nossa query SQL no Databricks retornou exatamente este resultado validado: {resultado_banco}
+
+        Aja como um Arquiteto de Soluções respondendo de forma educada, direta e profissional ao diretor.
+        Formate valores monetários em dólares quando aplicável. Não explique a query SQL, foque no insight de negócio.
+        """
+
+        try:
+            response_final = client.chat.completions.create(
+                model=modelo_ativo,
+                messages=[
+                    {"role": "system", "content": "Você é um Arquiteto de Soluções C-Level. Responda de forma direta, sem tags de raciocínio."},
+                    {"role": "user", "content": prompt_sintese}
+                ],
+                temperature=0.4
+            )
+            texto_final = response_final.choices[0].message.content.strip()
+            texto_final = re.sub(r"<think>.*?</think>", "", texto_final, flags=re.DOTALL).strip()
+            print(texto_final)
+            
+        except Exception as e_sintese:
+            print("Prezado Diretor,")
+            print(f"A nossa análise direta na base de dados retornou o resultado: **{resultado_banco}**.")
+            print("\nAtenciosamente,")
+            print("**Equipe de Arquitetura de Soluções**")
 
 except Exception as e:
     print(f"\n[ERRO DE INFRAESTRUTURA] Falha crítica na extração dos dados.")
     print(f"Detalhe técnico: {e}")
-
-# TESTE DEPLOY ACTIONS
