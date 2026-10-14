@@ -51,7 +51,7 @@ try:
     print(f"[Diretoria]: '{pergunta_usuario}'")
 
     response_sql = client.chat.completions.create(
-        model="llama-3.1-70b-versatile",
+        model="llama3-70b-8192", # <--- Nova string do modelo
         messages=[
             {"role": "system", "content": instrucao_sistema},
             {"role": "user", "content": pergunta_usuario}
@@ -98,7 +98,7 @@ try:
 
     try:
         response_final = client.chat.completions.create(
-            model="llama-3.1-70b-versatile",
+            model="llama3-8b-8192", # <--- Nova string do modelo
             messages=[
                 {"role": "system", "content": "Você é um Arquiteto de Soluções C-Level."},
                 {"role": "user", "content": prompt_sintese}
