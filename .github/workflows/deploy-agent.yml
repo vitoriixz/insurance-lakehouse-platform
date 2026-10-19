@@ -8,6 +8,7 @@ on:
       - 'agent.py'
       - 'Dockerfile.agent'
       - 'requirements.txt'
+      - 'dockerignore'
 
 jobs:
   build-and-push:
