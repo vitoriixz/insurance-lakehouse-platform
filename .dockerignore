@@ -5,6 +5,3 @@ __pycache__/
 .git/
 .github/
 terraform/
-agent.py
-Dockerfile.agent
-teste_db.py
