@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 from dotenv import load_dotenv
 from groq import Groq
 from databricks import sql
@@ -49,11 +50,15 @@ def selecionar_modelo_ativo(groq_client):
 
 # 2. Schema da Tabela Silver
 schema_silver = """
-Tabela: silver_claims
+Tabela: workspace.default.silver_claims
 Colunas:
 - claim_id (INT): Identificador único do sinistro
 - amount (DOUBLE): Valor financeiro do sinistro
-- weather_condition (STRING): Condição climática no momento do incidente (Exemplos comuns: 'Rain', 'Clear', 'Snow', 'Fog', 'Storm')
+- weather_condition (STRING): Condição climática no momento do incidente (Ex: 'Rain', 'Clear', 'Snow')
+- claim_date (DATE): Data do registro do sinistro
+- city (STRING): Cidade de ocorrência do sinistro
+- claim_type (STRING): Tipo do seguro acionado
+- status (STRING): Status atual do processo (Ex: 'Approved', 'Pending', 'Rejected')
 """
 
 # 3. System Instruction
@@ -75,7 +80,11 @@ try:
     # =====================================================================
     # FASE 1: O CÉREBRO (Text-to-SQL via Groq)
     # =====================================================================
-    pergunta_usuario = os.getenv("USER_PROMPT", "Qual é o valor total financeiro (amount) de todos os sinistros registrados na base?")
+    # Captura a pergunta passada como argumento no terminal, ou usa o padrão se vier vazio
+    if len(sys.argv) > 1:
+        pergunta_usuario = sys.argv[1]
+    else:
+        pergunta_usuario = "Qual é o valor total financeiro (amount) de todos os sinistros registrados na base?"
     
     print(f"[Diretoria]: '{pergunta_usuario}'")
 
@@ -107,6 +116,7 @@ try:
         with connection.cursor() as cursor:
             cursor.execute(query_gerada)
             rows = cursor.fetchall()
+
 
     # Validação estrita: verifica se a tabela retornou linhas e se o valor não é NULL (None)
     sem_dados = (

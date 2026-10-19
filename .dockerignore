@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+.DS_Store
+.env
+.git/
+.github/
+terraform/
+agent.py
+Dockerfile.agent
+teste_db.py
