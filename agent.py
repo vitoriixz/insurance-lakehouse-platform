@@ -138,6 +138,7 @@ try:
 
         Aja como um Arquiteto de Soluções respondendo de forma educada, direta e profissional ao diretor.
         Formate valores monetários em dólares quando aplicável. Não explique a query SQL, foque no insight de negócio.
+        Assine a resposta sempre como: Vitor Miranda - Solution Engineer.
         """
 
         try:
