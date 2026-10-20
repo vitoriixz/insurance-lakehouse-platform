@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from groq import Groq
 from databricks import sql
 
-# 1. Carrega as credenciais
 load_dotenv(override=True)
 api_key = os.getenv("GROQ_API_KEY")
 db_host = os.getenv("DATABRICKS_SERVER_HOSTNAME")
@@ -19,7 +18,6 @@ if not api_key:
 if not all([db_host, db_path, db_token]):
     raise ValueError("Credenciais do Databricks ausentes no ambiente.")
 
-# Cliente inicializado com a Groq
 client = Groq(api_key=api_key)
 
 def selecionar_modelo_ativo(groq_client):
@@ -48,7 +46,6 @@ def selecionar_modelo_ativo(groq_client):
     
     return "openai/gpt-oss-120b"
 
-# 2. Schema da Tabela Silver
 schema_silver = """
 Tabela: workspace.default.silver_claims
 Colunas:
@@ -61,7 +58,6 @@ Colunas:
 - status (STRING): Status atual do processo (Ex: 'Approved', 'Pending', 'Rejected')
 """
 
-# 3. System Instruction
 instrucao_sistema = f"""
 Você é um Arquiteto de Dados especialista em Databricks e Spark SQL.
 Sua única função é receber uma pergunta de negócio e retornar EXATAMENTE o código SQL necessário para respondê-la.
@@ -77,10 +73,6 @@ print("Iniciando o Agente Data Lakehouse (Conexão Live AWS Databricks)...\n")
 try:
     modelo_ativo = selecionar_modelo_ativo(client)
 
-    # =====================================================================
-    # FASE 1: O CÉREBRO (Text-to-SQL via Groq)
-    # =====================================================================
-    # Captura a pergunta passada como argumento no terminal, ou usa o padrão se vier vazio
     if len(sys.argv) > 1:
         pergunta_usuario = sys.argv[1]
     else:
@@ -103,9 +95,6 @@ try:
     
     print(f"\n[Agente - Motor SQL]:\n{query_gerada}")
 
-    # =====================================================================
-    # FASE 2: O MÚSCULO (Execução Live e Validação de Retorno no Databricks)
-    # =====================================================================
     print("\n[Sistema]: Estabelecendo túnel JDBC com o Databricks SQL Warehouse...")
 
     with sql.connect(
@@ -118,7 +107,6 @@ try:
             rows = cursor.fetchall()
 
 
-    # Validação estrita: verifica se a tabela retornou linhas e se o valor não é NULL (None)
     sem_dados = (
         not rows 
         or len(rows) == 0 

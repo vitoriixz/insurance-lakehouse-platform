@@ -72,10 +72,13 @@
             outputBox.scrollTop = outputBox.scrollHeight;
 
             try {
-                // Chamada via POST para a sua Lambda Function URL com o prompt dinâmico
+                // Chamada via POST para a sua Lambda Function URL com o prompt dinâmico e o Token de Segurança
                 const response = await fetch('https://lta7bg2ryjawwzcffy5jjnsokq0ahbph.lambda-url.us-east-1.on.aws/', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'x-token-diretoria': 'LakehouseSeguro2026!' // <-- O crachá de autorização da Diretoria
+                    },
                     body: JSON.stringify({ prompt: promptText })
                 });
 
